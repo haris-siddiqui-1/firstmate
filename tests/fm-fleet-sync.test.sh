@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
-# Behavior tests for fm-fleet-sync.sh drift handling.
-#
-# fm-fleet-sync fast-forwards a clone that is cleanly on its default branch. This
-# suite pins the two behavioral additions on top of that:
+# fm-fleet-sync fast-forwards the checked-out branch to its own upstream when the
+# clone is clean and strictly behind it - default or non-default branch alike.
+# This suite pins that plus the two behavioral additions on top of it:
 #   - the one safe drift self-heals: a clean, detached HEAD that holds no unique
 #     commits (it is an ancestor of origin/<default>) and whose <default> is free
 #     to check out is re-attached and then fast-forwarded ("recovered:").
-#   - every other off-default state is left untouched and reported as a loud,
-#     quantified "STUCK: ... N commits behind ... - needs attention" warning
+#   - every other unsafe state - a dirty tree, a branch with no upstream or whose
+#     upstream is gone, a detached HEAD with unique commits, or a branch genuinely
+#     diverged from (or ahead of) its upstream - is left untouched and reported as
+#     a loud "STUCK: ... - needs attention" warning (quantified against that
+#     branch's own upstream, or against origin/<default> for detached HEADs)
 #     instead of a quiet skip.
 # The pre-existing fast-forward / already-current / local-only / no-origin paths
 # must be unchanged, and bootstrap must relay the new outcomes as FLEET_SYNC lines.
@@ -76,6 +78,17 @@ build_pair() {
 
   git clone --quiet "file://$remote_abs" "$clone"
   printf '%s\n' "$clone"
+}
+
+# advance_origin_branch <home> <name> <branch> <msg>: push one more commit to
+# <name>'s origin on <branch> via its work repo, so a clone on that branch is
+# one commit behind that branch's own upstream after it fetches.
+advance_origin_branch() {
+  local home=$1 name=$2 branch=$3 msg=$4 work
+  work="$home/work-$name"
+  git -C "$work" checkout -q "$branch" 2>/dev/null || git -C "$work" checkout -qb "$branch"
+  commit_file "$work" file.txt "$msg" "$msg"
+  git -C "$work" push -q origin "$branch"
 }
 
 # advance_origin <home> <name> <msg>: push one more commit to <name>'s origin via
@@ -316,20 +329,84 @@ test_dirty_is_stuck_untouched() {
   pass "dirty working tree is reported STUCK and left untouched"
 }
 
-test_non_default_branch_is_stuck_untouched() {
-  local home clone out
+test_non_default_branch_behind_upstream_fast_forwards() {
+  local home clone out before after
   home=$(new_home)
   clone=$(build_pair "$home" delta)
   git -C "$clone" checkout -q -b feature
-  advance_origin "$home" delta C1
+  git -C "$clone" push -q -u origin feature
+  advance_origin_branch "$home" delta feature C1
+  before=$(head_sha "$clone")
 
   out=$(run_sync "$home" "$clone")
 
-  assert_contains "$out" "delta: STUCK: on branch feature" "non-default branch reports STUCK with branch name"
-  assert_contains "$out" "commits behind origin/main - needs attention" "STUCK is quantified"
-  assert_not_contains "$out" "recovered" "named branch is never auto-changed"
-  [ "$(git -C "$clone" symbolic-ref --short HEAD)" = "feature" ] || fail "named branch checkout was changed"
-  pass "non-default named branch is reported STUCK and left untouched"
+  assert_contains "$out" "delta: synced" "clean non-default branch behind its upstream fast-forwards"
+  assert_not_contains "$out" "STUCK" "fast-forwarded non-default branch is not flagged STUCK"
+  assert_not_contains "$out" "recovered" "ordinary fast-forward is not labelled recovered"
+  [ "$(git -C "$clone" symbolic-ref --short HEAD)" = "feature" ] || fail "branch checkout was changed"
+  after=$(head_sha "$clone")
+  [ "$after" != "$before" ] || fail "expected fast-forward, HEAD unchanged"
+  [ "$after" = "$(git -C "$clone" rev-parse origin/feature)" ] \
+    || fail "expected HEAD at origin/feature after sync"
+  pass "clean non-default branch behind its own upstream fast-forwards"
+}
+
+test_non_default_branch_dirty_is_stuck_untouched() {
+  local home clone out before
+  home=$(new_home)
+  clone=$(build_pair "$home" delta-dirty)
+  git -C "$clone" checkout -q -b feature
+  git -C "$clone" push -q -u origin feature
+  advance_origin_branch "$home" delta-dirty feature C1
+  before=$(head_sha "$clone")
+  printf 'uncommitted edit\n' >> "$clone/file.txt"
+
+  out=$(run_sync "$home" "$clone")
+
+  assert_contains "$out" "delta-dirty: STUCK:" "dirty non-default branch reports STUCK"
+  assert_contains "$out" "branch feature with uncommitted changes" "STUCK names the dirty state"
+  assert_contains "$out" "1 commits behind origin/feature - needs attention" "STUCK is quantified against the branch upstream"
+  [ "$(head_sha "$clone")" = "$before" ] || fail "dirty branch HEAD was moved"
+  grep -q "uncommitted edit" "$clone/file.txt" || fail "dirty working-tree change was discarded"
+  pass "dirty non-default branch is reported STUCK and left untouched"
+}
+
+test_non_default_branch_diverged_is_stuck_untouched() {
+  local home clone out before
+  home=$(new_home)
+  clone=$(build_pair "$home" delta-diverged)
+  git -C "$clone" checkout -q -b feature
+  git -C "$clone" push -q -u origin feature
+  # Local feature gains its own commit; origin advances down a different line.
+  commit_file "$clone" local.txt local "local divergent feature commit"
+  before=$(head_sha "$clone")
+  advance_origin_branch "$home" delta-diverged feature C1
+
+  out=$(run_sync "$home" "$clone")
+
+  assert_contains "$out" "delta-diverged: STUCK:" "diverged non-default branch reports STUCK"
+  assert_contains "$out" "branch feature diverged from origin/feature" "STUCK names the diverged state"
+  assert_contains "$out" "commits behind origin/feature - needs attention" "STUCK is quantified against the branch upstream"
+  [ "$(head_sha "$clone")" = "$before" ] || fail "diverged branch was moved"
+  pass "diverged non-default branch is reported STUCK and left untouched"
+}
+
+test_non_default_branch_without_upstream_is_stuck_untouched() {
+  local home clone out before
+  home=$(new_home)
+  clone=$(build_pair "$home" delta-noupstream)
+  git -C "$clone" checkout -q -b feature
+  before=$(head_sha "$clone")
+  advance_origin "$home" delta-noupstream C1
+
+  out=$(run_sync "$home" "$clone")
+
+  assert_contains "$out" "delta-noupstream: STUCK:" "branch without upstream reports STUCK"
+  assert_contains "$out" "branch feature with no upstream" "STUCK names the missing upstream"
+  assert_not_contains "$out" "recovered" "missing-upstream case is never recovered"
+  [ "$(git -C "$clone" symbolic-ref --short HEAD)" = "feature" ] || fail "branch checkout was changed"
+  [ "$(head_sha "$clone")" = "$before" ] || fail "branch without upstream was moved"
+  pass "non-default branch without upstream is reported STUCK and left untouched"
 }
 
 test_diverged_is_stuck_untouched() {
@@ -344,7 +421,7 @@ test_diverged_is_stuck_untouched() {
   out=$(run_sync "$home" "$clone")
 
   assert_contains "$out" "epsilon: STUCK:" "diverged clone reports STUCK"
-  assert_contains "$out" "diverged main" "STUCK names the diverged state"
+  assert_contains "$out" "branch main diverged from origin/main" "STUCK names the diverged state"
   assert_contains "$out" "commits behind origin/main - needs attention" "STUCK is quantified"
   [ "$(head_sha "$clone")" = "$before" ] || fail "diverged clone was moved"
   pass "diverged default branch is reported STUCK and left untouched"
@@ -698,7 +775,10 @@ test_detached_clean_ancestor_recovers
 test_detached_unique_commit_is_stuck_untouched
 test_detached_clean_ancestor_with_diverged_local_default_is_stuck_untouched
 test_dirty_is_stuck_untouched
-test_non_default_branch_is_stuck_untouched
+test_non_default_branch_behind_upstream_fast_forwards
+test_non_default_branch_dirty_is_stuck_untouched
+test_non_default_branch_diverged_is_stuck_untouched
+test_non_default_branch_without_upstream_is_stuck_untouched
 test_diverged_is_stuck_untouched
 test_on_default_clean_behind_fast_forwards
 test_already_current_unchanged

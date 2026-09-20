@@ -1,16 +1,19 @@
 #!/usr/bin/env bash
-# Refresh project clones: fast-forward the checked-out local default branch to
-# origin/<default> when safe, and prune local branches whose upstream tracking
+# Refresh project clones: fast-forward the checked-out branch to its own upstream
+# when safe, and prune local branches whose upstream tracking
 # branch is gone (the remote branch was deleted, i.e. its PR merged) and that no
 # worktree still needs.
 # Self-heals the one unambiguously safe drift: a clean, detached HEAD that holds
 # no unique commits (it is an ancestor of origin/<default>) and whose <default>
 # branch is free to check out is re-attached and then fast-forwarded ("recovered:").
-# Every other off-default state - a non-default named branch, a detached HEAD with
-# unique commits, a dirty tree, or a diverged default - may hold real work, so it
-# is left untouched and reported as a quantified, loud "STUCK: ... N commits behind
-# ... - needs attention" warning rather than a quiet drift. Nothing is ever forced,
-# stashed, or discarded.
+# A clean clone on a named branch (default or not) fast-forwards to that branch's
+# own upstream when strictly behind it. Every other unsafe state - a dirty tree,
+# a branch with no upstream or whose upstream is gone, a detached HEAD with
+# unique commits, or a branch genuinely diverged from its upstream - may hold real
+# work, so it is left untouched and reported as a loud "STUCK: ... - needs attention"
+# warning (quantified against that branch's own upstream, or against
+# origin/<default> for detached HEADs) rather than a quiet drift. Nothing is ever
+# forced, stashed, or discarded.
 # Still skips (benignly) local-only/no-origin projects, missing remotes/branches,
 # and fetch failures.
 # A candidate under projects/ must be the root of its own work tree: git discovery
@@ -267,12 +270,19 @@ local_default_safe_for_recovery() {
 }
 
 # Human-readable name for the unsafe state the clone is in, used in the STUCK
-# warning. Reads $cur (current branch, empty when detached), $dirty, and the
-# HEAD-vs-$BASE ancestry to pick the most informative description.
+# warning. Reads $cur (current branch, empty when detached), $dirty, $UPSTREAM
+# (that branch's own upstream, empty when none), and $UPSTREAM_GONE, plus the
+# HEAD-vs-$BASE ancestry for detached HEADs.
 stuck_state() {
   local s
   if [ -n "$cur" ]; then
-    s="branch $cur"
+    if [ -z "$UPSTREAM" ]; then
+      s="branch $cur with no upstream"
+    elif [ "$UPSTREAM_GONE" = yes ]; then
+      s="branch $cur whose upstream is gone"
+    else
+      s="branch $cur"
+    fi
   elif [ "$dirty" = yes ]; then
     s="detached HEAD"
   elif ! git -C "$PROJ" merge-base --is-ancestor HEAD "$BASE" 2>/dev/null; then
@@ -289,12 +299,18 @@ stuck_state() {
 }
 
 # Loud, quantified report for a clone we deliberately leave untouched. Includes
-# how far behind origin/<default> it is, so a chronically-stuck clone is visibly
-# distinct from a benign one-off skip.
+# how far behind its own upstream (named branch) or origin/<default> (detached
+# HEAD) it is, so a chronically-stuck clone is visibly distinct from a benign
+# one-off skip. A missing or gone upstream has no count to give, so it stays loud
+# without one.
 report_stuck() {
   local state=$1 behind
-  behind=$(git -C "$PROJ" rev-list --count "HEAD..$BASE" 2>/dev/null) || behind="?"
-  echo "$label: STUCK: on $state, $behind commits behind $BASE - needs attention"
+  if [ -n "$cur" ] && { [ -z "$UPSTREAM" ] || [ "$UPSTREAM_GONE" = yes ]; }; then
+    echo "$label: STUCK: on $state - needs attention"
+    return 0
+  fi
+  behind=$(git -C "$PROJ" rev-list --count "HEAD..$STUCK_BASE" 2>/dev/null) || behind="?"
+  echo "$label: STUCK: on $state, $behind commits behind $STUCK_BASE - needs attention"
 }
 
 sync_project() {
@@ -359,36 +375,93 @@ sync_project() {
   cur=$(git -C "$PROJ" symbolic-ref --short HEAD 2>/dev/null || echo "")
   dirty=no
   [ -z "$(git -C "$PROJ" status --porcelain 2>/dev/null | head -1)" ] || dirty=yes
-  recovered=no
+  UPSTREAM=""
+  UPSTREAM_GONE=no
+  STUCK_BASE=$BASE
 
-  if [ "$cur" != "$DEFAULT" ]; then
-    # Off the default branch. Auto-recover only the one unambiguously safe drift:
-    # a clean, detached HEAD that holds no unique commits (it is an ancestor of
-    # origin/<default>) and whose <default> branch is free to check out here.
-    # Re-attaching to an already-published commit strands nothing, and the
-    # fast-forward path below then catches the clone up. Anything else - a
-    # non-default named branch, a detached HEAD with unique commits, a dirty tree,
-    # or <default> already checked out elsewhere - may hold real work, so it is
-    # reported loudly and left untouched.
-    if [ -z "$cur" ] && [ "$dirty" = no ] \
-        && git -C "$PROJ" merge-base --is-ancestor HEAD "$BASE" 2>/dev/null \
-        && ! default_checked_out_elsewhere \
-        && local_default_safe_for_recovery; then
-      if ! git -C "$PROJ" checkout --quiet "$DEFAULT" 2>/dev/null; then
-        report_stuck "$(stuck_state)"
-        return 0
+  if [ -n "$cur" ]; then
+    # On a named branch - default or not. Move it toward its OWN upstream, not
+    # origin/<default>. A dirty tree must not be disturbed; a missing or gone
+    # upstream has nothing safe to fast-forward to; a branch that is not strictly
+    # behind its upstream (current or holding unique commits) is left untouched.
+    UPSTREAM=$(git -C "$PROJ" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)
+    if [ -z "$UPSTREAM" ] || ! git -C "$PROJ" rev-parse --verify --quiet "$UPSTREAM^{commit}" >/dev/null 2>&1; then
+      if git -C "$PROJ" for-each-ref --format='%(upstream:track)' "refs/heads/$cur" 2>/dev/null | grep -Fxq '[gone]'; then
+        UPSTREAM=$(git -C "$PROJ" for-each-ref --format='%(upstream:short)' "refs/heads/$cur" 2>/dev/null)
+        UPSTREAM_GONE=yes
+      else
+        UPSTREAM=""
       fi
-      recovered=yes
-      cur=$DEFAULT
-    else
+      STUCK_BASE=$BASE
       report_stuck "$(stuck_state)"
       return 0
     fi
-  elif [ "$dirty" = yes ]; then
-    # On the default branch but with uncommitted changes we must not disturb.
+    STUCK_BASE=$UPSTREAM
+    if [ "$dirty" = yes ]; then
+      report_stuck "$(stuck_state)"
+      return 0
+    fi
+    local_rev=$(git -C "$PROJ" rev-parse HEAD) || {
+      echo "$label: skipped: cannot read local $cur"
+      return 0
+    }
+    remote_rev=$(git -C "$PROJ" rev-parse "$UPSTREAM") || {
+      echo "$label: skipped: cannot read $UPSTREAM"
+      return 0
+    }
+    if [ "$local_rev" = "$remote_rev" ]; then
+      echo "$label: already current"
+      return 0
+    fi
+    if ! git -C "$PROJ" merge-base --is-ancestor HEAD "$UPSTREAM"; then
+      if git -C "$PROJ" merge-base --is-ancestor "$UPSTREAM" HEAD 2>/dev/null; then
+        report_stuck "branch $cur ahead of $UPSTREAM"
+      else
+        report_stuck "branch $cur diverged from $UPSTREAM"
+      fi
+      return 0
+    fi
+    before=$(git -C "$PROJ" rev-parse --short HEAD) || {
+      echo "$label: skipped: cannot read local $cur"
+      return 0
+    }
+    if ! merge_output=$(git -C "$PROJ" merge --ff-only "$UPSTREAM" 2>&1); then
+      reason="fast-forward failed"
+      if [ -n "$merge_output" ]; then
+        reason="$reason: $(first_line "$merge_output")"
+      fi
+      echo "$label: skipped: $reason"
+      return 0
+    fi
+    after=$(git -C "$PROJ" rev-parse --short HEAD) || {
+      echo "$label: skipped: fast-forward completed but cannot read local $cur"
+      return 0
+    }
+    echo "$label: synced $before..$after"
+    return 0
+  fi
+
+  # Detached HEAD. Auto-recover only the one unambiguously safe drift: a clean
+  # HEAD that holds no unique commits (it is an ancestor of origin/<default>)
+  # and whose <default> branch is free to check out here. Re-attaching to an
+  # already-published commit strands nothing, and the fast-forward path below
+  # then catches the clone up. Anything else - unique commits, a dirty tree, or
+  # <default> already checked out elsewhere - may hold real work, so it is
+  # reported loudly and left untouched.
+  if ! { [ "$dirty" = no ] \
+      && git -C "$PROJ" merge-base --is-ancestor HEAD "$BASE" 2>/dev/null \
+      && ! default_checked_out_elsewhere \
+      && local_default_safe_for_recovery; }; then
     report_stuck "$(stuck_state)"
     return 0
   fi
+  if ! git -C "$PROJ" checkout --quiet "$DEFAULT" 2>/dev/null; then
+    report_stuck "$(stuck_state)"
+    return 0
+  fi
+  cur=$DEFAULT
+  UPSTREAM=$BASE
+  STUCK_BASE=$BASE
 
   if ! git -C "$PROJ" rev-parse --verify --quiet "$DEFAULT^{commit}" >/dev/null; then
     echo "$label: skipped: local $DEFAULT does not exist"
@@ -404,11 +477,7 @@ sync_project() {
     return 0
   }
   if [ "$local_rev" = "$remote_rev" ]; then
-    if [ "$recovered" = yes ]; then
-      echo "$label: recovered: re-attached $DEFAULT (already current)"
-    else
-      echo "$label: already current"
-    fi
+    echo "$label: recovered: re-attached $DEFAULT (already current)"
     return 0
   fi
   if ! git -C "$PROJ" merge-base --is-ancestor "$DEFAULT" "$BASE"; then
@@ -432,11 +501,7 @@ sync_project() {
     echo "$label: skipped: fast-forward completed but cannot read local $DEFAULT"
     return 0
   }
-  if [ "$recovered" = yes ]; then
-    echo "$label: recovered: re-attached $DEFAULT, synced $before..$after"
-  else
-    echo "$label: synced $before..$after"
-  fi
+  echo "$label: recovered: re-attached $DEFAULT, synced $before..$after"
   return 0
 }
 
