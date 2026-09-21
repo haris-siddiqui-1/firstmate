@@ -324,8 +324,9 @@ report_stuck() {
 }
 
 report_off_default_current() {
-  local base_behind=$1
-  echo "$label: STUCK: on $cur, current with its own remote but $base_behind behind $BASE - needs attention"
+  local base_behind=$1 qualifier=""
+  [ "$dirty" = no ] || qualifier=" with uncommitted changes"
+  echo "$label: STUCK: on $cur$qualifier, current with its own remote but $base_behind behind $BASE - needs attention"
 }
 
 report_off_default_unique() {
