@@ -1313,7 +1313,30 @@ test_terminal_passed() {
   assert_contains "$out" "source: run-step" "passed -> run-step source"
   assert_contains "$out" "run passed: PR merged" "passed run reports merged only after the PR record says merged"
   assert_not_contains "$out" "merged/closed" "passed merged PR must not keep the old ambiguous label"
+  assert_contains "$out" "match" "matching heads report match"
   pass "terminal passed run is authoritative"
+}
+
+test_terminal_passed_diverged_heads_surface_divergence() {
+  reset_fakes
+  local d forge local_short out
+  d=$(new_case passed-diverged)
+  make_repo_on_branch "$d/wt" fm/feat-ddiverged
+  git -C "$d/wt" commit -q --allow-empty -m local-advance
+  FM_FAKE_RUN_HEAD=$(git -C "$d/wt" rev-parse HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-ddiverged.meta" "window=fm:fm-feat-ddiverged" \
+    "worktree=$d/wt" "kind=ship" "pr=https://github.com/o/r/pull/1"
+  forge=$(git -C "$d/wt" rev-parse "HEAD~1")
+  local_short=$(git -C "$d/wt" rev-parse --short=7 HEAD)
+  FM_FAKE_PR_HEAD=$forge
+  FM_FAKE_AXI_STATUS="$(run_passed_with_pr fm/feat-ddiverged https://github.com/o/r/pull/1)"
+  out=$(run_crew_state "$d" feat-ddiverged)
+  assert_contains "$out" "state: done" "diverged passed run -> done"
+  assert_contains "$out" "run passed: PR merged" "diverged passed run still reports merged"
+  assert_contains "$out" "local=$local_short" "diverged line carries the local head"
+  assert_contains "$out" "local+1 pr+0" "one local commit past the forge head reads as behind counts"
+  pass "diverged forge and local heads surface their divergence"
 }
 
 test_terminal_passed_uses_matching_retirement_receipt_without_forge() {
@@ -4713,6 +4736,7 @@ test_ci_fixing_after_green_stays_working
 test_top_level_fixing_ci_running_after_green_stays_working
 test_top_level_fixing_done_log_stays_working
 test_terminal_passed
+test_terminal_passed_diverged_heads_surface_divergence
 test_terminal_passed_uses_matching_retirement_receipt_without_forge
 test_terminal_passed_no_forge_switch_skips_read_but_keeps_receipt
 test_terminal_passed_with_open_pr_does_not_claim_merged
