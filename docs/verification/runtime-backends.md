@@ -2100,7 +2100,7 @@ Under the captain's `unicode` symbol preset the idle screen through Herdr was a 
 
 Before the status-row rule the shared classifier folded that row into the bare composer's wrap region and read the idle pane `pending`, so `bin/fm-send.sh` skipped its doorbell on the first live omp worker.
 After the rule, the same live Herdr capture read `empty`, a steer's doorbell landed, and the worker opened a turn on it.
-`tests/fm-composer-lib.test.sh` pins the unicode idle row, the nerd-preset idle row, the busy spinner row, and typed text over the same fixture in both locales.
+`tests/fm-composer-lib.test.sh` pins the unicode idle row, the nerd-preset idle row, the ASCII-preset idle and busy rows (re-verified live on omp 18.2.2, whose ASCII footer reads `pi · … · ctx: 20.0%/1M`), the busy spinner row, and typed text over the same fixture in every locale.
 
 ### Busy state and lifecycle
 
