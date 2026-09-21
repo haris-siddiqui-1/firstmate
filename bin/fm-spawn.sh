@@ -2966,8 +2966,8 @@ spawn_worktree_has_origin_config() { # <worktree>
   return 1
 }
 
-freshen_spawn_worktree_base() { # <worktree>
-  local worktree=$1 default target expected actual status
+freshen_spawn_worktree_base() { # <worktree> [<project-name>]
+  local worktree=$1 default target expected actual status dev
   status=$(git -C "$worktree" -c core.quotePath=false status --porcelain) || {
     echo "error: could not inspect pooled worktree '$worktree' before refreshing its base" >&2
     return 1
@@ -2991,10 +2991,19 @@ freshen_spawn_worktree_base() { # <worktree>
     echo "error: could not resolve origin's current default branch for pooled worktree '$worktree'; refusing to launch from a potentially stale base" >&2
     return 1
   fi
-  default=$(default_branch "$worktree") || {
-    echo "error: could not determine origin's default branch for pooled worktree '$worktree'; refusing to launch from a potentially stale base" >&2
-    return 1
-  }
+  dev=$("$FM_ROOT/bin/fm-project-dev-branch.sh" "${2:-$(basename "$PROJ_ABS")}" 2>/dev/null || true)
+  if [ -n "$dev" ]; then
+    default=$dev
+    if ! git -C "$worktree" ls-remote --exit-code --heads origin "$default" >/dev/null 2>&1; then
+      echo "error: declared development branch '$default' for pooled worktree '$worktree' does not exist on origin; refusing to launch from a misdeclared base" >&2
+      return 1
+    fi
+  else
+    default=$(default_branch "$worktree") || {
+      echo "error: could not determine origin's default branch for pooled worktree '$worktree'; refusing to launch from a potentially stale base" >&2
+      return 1
+    }
+  fi
   target="origin/$default"
   if ! git -C "$worktree" fetch --quiet origin "+refs/heads/$default:refs/remotes/origin/$default"; then
     echo "error: could not fetch '$target' for pooled worktree '$worktree'; refusing to launch from a potentially stale base" >&2

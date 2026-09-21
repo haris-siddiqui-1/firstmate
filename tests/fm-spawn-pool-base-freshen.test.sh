@@ -215,6 +215,30 @@ test_non_main_default_branch_refreshes_before_branching() {
   pass "a stale pooled worktree resolves and refreshes a non-main default branch"
 }
 
+test_declared_dev_branch_refreshes_that_branch() {
+  local rec id out status current branch_head proj_name
+  id='pool-dev-branch-r3'
+  rec=$(make_case dev-branch "$id")
+  read_case_record "$rec"
+  git -C "$PROJECT_DIR" checkout -q -b develop
+  printf 'dev work\n' > "$PROJECT_DIR/dev.txt"
+  git -C "$PROJECT_DIR" add dev.txt
+  git -C "$PROJECT_DIR" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' commit -qm develop-work
+  git -C "$PROJECT_DIR" push --quiet -u origin develop
+  git -C "$PROJECT_DIR" checkout -q main
+  proj_name=$(basename "$PROJECT_DIR")
+  mkdir -p "$HOME_DIR/data"
+  printf -- '- %s [no-mistakes] [dev:develop] - test project (added 2026-09-21)\n' "$proj_name" > "$HOME_DIR/data/projects.md"
+
+  out=$(run_spawn "$id" --mode no-mistakes --yolo off)
+  status=$?
+  expect_code 0 "$status" "spawn should refresh a pooled worktree to the declared development branch"
+  current=$(git -C "$POOL_DIR" rev-parse origin/develop)
+  branch_head=$(git -C "$POOL_DIR" rev-parse HEAD)
+  [ "$branch_head" = "$current" ] || fail "spawn did not refresh to current origin/develop"
+  [ "$branch_head" != "$INITIAL_SHA" ] || fail "fixture did not prove origin/develop advanced past the pool base"
+  pass "a stale pooled worktree refreshes to the declared development branch"
+}
 make_originless_case() {  # <name> <id>
   local name=$1 id=$2 case_dir home project pool fakebin initial
   case_dir="$TMP_ROOT/$name"
@@ -748,6 +772,7 @@ test_pool_slot_claim_follows_the_spawn_outcome
 test_linked_spawning_home_rejects_primary_before_refresh
 test_stale_pool_base_refreshes_before_branching
 test_non_main_default_branch_refreshes_before_branching
+test_declared_dev_branch_refreshes_that_branch
 test_direct_pr_and_scout_refresh_before_launch
 test_dirty_pool_refuses_without_discarding_work
 test_unresolved_remote_default_refuses_pool

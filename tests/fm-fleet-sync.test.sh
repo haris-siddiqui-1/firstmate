@@ -487,6 +487,44 @@ test_local_only_skipped() {
   pass "local-only clone is skipped (benign), not flagged STUCK"
 }
 
+test_declared_dev_branch_syncs_that_branch() {
+  local home clone out work
+  home=$(new_home)
+  clone=$(build_pair "$home" devproj)
+  work="$home/work-devproj"
+  git -C "$work" checkout -q -b develop
+  commit_file "$work" dev.txt d1 D1
+  git -C "$work" push -q -u origin develop
+  git -C "$clone" fetch --quiet origin
+  git -C "$clone" checkout -q develop
+  commit_file "$work" dev.txt d2 D2
+  git -C "$work" push -q origin develop
+  mkdir -p "$home/data"
+  printf -- '- devproj [no-mistakes] [dev:develop] - test project (added 2026-09-21)\n' > "$home/data/projects.md"
+
+  out=$(run_sync "$home" devproj)
+
+  assert_contains "$out" "devproj: synced" "declared develop branch fast-forwards"
+  assert_not_contains "$out" "STUCK" "develop sync is not flagged STUCK"
+  [ "$(git -C "$clone" rev-parse develop)" = "$(git -C "$clone" rev-parse origin/develop)" ] \
+    || fail "expected local develop at origin/develop after sync"
+  pass "declared development branch syncs that branch"
+}
+
+test_missing_dev_branch_declaration_skips_loudly() {
+  local home clone out
+  home=$(new_home)
+  clone=$(build_pair "$home" ghostproj)
+  mkdir -p "$home/data"
+  printf -- '- ghostproj [no-mistakes] [dev:develop] - test project (added 2026-09-21)\n' > "$home/data/projects.md"
+
+  out=$(run_sync "$home" ghostproj)
+
+  assert_contains "$out" "declared development branch origin/develop does not exist" "missing declared branch skips loudly"
+  assert_not_contains "$out" "STUCK" "missing declared branch is a skip, not STUCK"
+  pass "missing declared development branch skips loudly"
+}
+
 test_single_project_by_bare_name_resolves() {
   local home out
   home=$(new_home)
@@ -784,6 +822,8 @@ test_on_default_clean_behind_fast_forwards
 test_already_current_unchanged
 test_no_origin_skipped
 test_local_only_skipped
+test_declared_dev_branch_syncs_that_branch
+test_missing_dev_branch_declaration_skips_loudly
 test_single_project_by_bare_name_resolves
 test_single_project_by_bare_name_ignores_cwd_shadow
 test_single_project_by_projects_relative_name_resolves
