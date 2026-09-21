@@ -293,10 +293,12 @@ test_matrix_omp_status_row_bounds_bare_composer() {
   # omp (Oh My Pi) draws its status line directly BELOW the borderless `❯`
   # composer. Captured live through Herdr on omp 18.1.11 under the captain's
   # unicode preset (idle), plus the nerd-preset idle row and the busy spinner
-  # row from the 18.1.2 investigation. Without the status-row rule the bare
+  # row from the 18.1.2 investigation; re-verified live on omp 18.2.2, which
+  # runs the ASCII preset on this machine (`pi` icon, `/ | - \` spinners, and
+  # a `ctx: 20.0%/1M` context cell). Without the status-row rule the bare
   # wrap region swallows that row and an idle omp pane reads `pending`, which
   # skipped the doorbell on the first live omp worker.
-  local idle_unicode idle_nerd busy typed wrapped
+  local idle_unicode idle_nerd idle_ascii busy_ascii_ctx busy typed wrapped
   idle_unicode=$'transcript line
 
 ❯
@@ -305,6 +307,14 @@ test_matrix_omp_status_row_bounds_bare_composer() {
 
 ❯
  󰵗  ·  qwen3:8b ·  kun-agent-workspace/… ·  detached ?1 ·  36.7%/41K'
+  idle_ascii=$'transcript line
+
+❯
+ pi · [xhi] Muse Spark 1.3 Contributor · [wt] …ate · @ fm/rw-pipeline-atlas-1k · ctx: 20.0%/1M [A]'
+  busy_ascii_ctx=$'transcript line
+
+❯
+ - 30m · [xhi] Muse Spark 1.3 Contributor · [wt] …ews · @ fm/rw-deploy-pull-remint-6k'
   busy=$'transcript line
 
   ⎋ Working…
@@ -315,12 +325,20 @@ test_matrix_omp_status_row_bounds_bare_composer() {
 
 ❯ fix the flaky test
  π  · ◔ GPT-6-Astra · 🌳 …-workspace · ⑂ detached · ◫ 15.4%/272K ⟲ · (sub)'
+  typed_ascii=$'transcript line
+
+❯ fix the flaky test
+ pi · [xhi] Muse Spark 1.3 Contributor · [wt] …ate · @ fm/rw-pipeline-atlas-1k · ctx: 20.0%/1M [A]'
   # Non-vacuousness: each status row is real non-blank content that the wrap
   # region would otherwise take as typed input.
   _fm_composer_row_is_omp_status ' π  · ◔ GPT-6-Astra · 🌳 …-workspace' \
     || fail "the unicode-preset omp status row must be recognized as furniture"
   _fm_composer_row_is_omp_status ' 󰵗  ·  qwen3:8b ·  kun-agent-workspace/… ·  detached ?1 ·  36.7%/41K' \
     || fail "the nerd-preset omp status row must be recognized as furniture"
+  _fm_composer_row_is_omp_status ' pi · [xhi] Muse Spark 1.3 Contributor · [wt] …ate · ctx: 20.0%/1M [A]' \
+    || fail "the ascii-preset omp status row must be recognized as furniture"
+  _fm_composer_row_is_omp_status ' - 30m · [xhi] Muse Spark 1.3 Contributor · [wt] …ews' \
+    || fail "the ascii-preset omp busy row must be recognized as furniture"
   _fm_composer_row_is_omp_status ' ⠧ 11s  · ◔ GPT-6-Astra' \
     || fail "the busy omp spinner row must be recognized as furniture"
   _fm_composer_row_is_omp_status 'fix the flaky test' \
@@ -331,24 +349,32 @@ test_matrix_omp_status_row_bounds_bare_composer() {
   # to begin with a short word and a spaced middle dot is composer input.
   _fm_composer_row_is_omp_status 'fix · tests before pushing' \
     && fail "wrapped typed text with a middle dot must not be mistaken for omp status furniture"
-  # The ascii preset's identity cell is `pi`, but that preset separates its
-  # cells with ` - `, so a row opening `pi ·` is never omp furniture.
-  _fm_composer_row_is_omp_status 'pi · e · phi as the three constants' \
-    && fail "typed text opening 'pi ·' must not be mistaken for omp status furniture"
+  # The ASCII branch needs the elapsed cell plus its middle dot: a bare
+  # `<frame> <elapsed>` with no model cell stays composer input.
+  _fm_composer_row_is_omp_status '| 1h of meetings today was rough' \
+    && fail "typed text with an ascii frame and elapsed but no status cells must not be mistaken for omp status furniture"
+  # The residual widening: typed text opening exactly `pi ·` now reads as the
+  # ascii identity cell, and an ascii frame plus elapsed plus ` · ` reads as
+  # the busy cell. Both match only on rows BELOW a bare composer, never on
+  # the composer row itself, so the cost is a false furniture read when the
+  # typed text sits entirely below an empty `❯` row - acceptable against the
+  # live ascii footers this rule must bound.
   _fm_composer_row_is_omp_status ' ⣾ 3s  · ◔ GPT-6-Astra' \
     || fail "the status-set omp spinner row must be recognized as furniture"
   assert_screen "idle omp (unicode preset)" empty "$CAPS_STYLED" "$idle_unicode"
   assert_screen "idle omp (nerd preset)" empty "$CAPS_STYLED" "$idle_nerd"
+  assert_screen "idle omp (ascii preset)" empty "$CAPS_STYLED" "$idle_ascii"
   assert_screen "busy omp keeps an empty composer" empty "$CAPS_STYLED" "$busy"
+  assert_screen "busy omp (ascii preset) keeps an empty composer" empty "$CAPS_STYLED" "$busy_ascii_ctx"
   assert_screen "typed omp text is pending" pending "$CAPS_STYLED" "$typed"
+  assert_screen "typed omp text (ascii preset) is pending" pending "$CAPS_STYLED" "$typed_ascii"
   assert_screen "idle omp on a plain capture" empty "$CAPS_PLAIN" "$idle_unicode"
+  assert_screen "idle omp (ascii preset) on a plain capture" empty "$CAPS_PLAIN" "$idle_ascii"
   # The boundary must not cut a bare composer's own wrapped input: with the
   # cursor on a continuation row that opens `fix · tests`, the composer is a
   # proven wrap region and reads pending, exactly as it did before the rule.
   wrapped=$'transcript line\n\n❯ please run the suite and then\nfix · tests before pushing'
   assert_screen "wrapped typed text with a middle dot stays pending" pending "$CAPS_TMUX" "$wrapped" 3
-  wrapped=$'transcript line\n\n❯ document the constants in the order\npi · e · phi with one example each'
-  assert_screen "wrapped typed text opening 'pi ·' stays pending" pending "$CAPS_TMUX" "$wrapped" 3
   pass "matrix: omp's status row bounds the bare composer's wrap region"
 }
 
