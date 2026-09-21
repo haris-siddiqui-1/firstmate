@@ -1,0 +1,11 @@
+=== T1 live drive: pr_head_suffix against a real git repo ===
+forge head: 66e0cd067c7fbe3da4aec8b027f812439cfc13ac
+local head: daeaf116b1b779885f49931a8090efe28c3722a3
+--- case A: diverged (local 2 ahead of forge) ---
+ (pr=66e0cd0 local=daeaf11 local+2 pr+0)
+--- case B: match (forge == local) ---
+ (pr=daeaf11 local=daeaf11 match)
+--- case C: forge unreadable ---
+ (pr=unreadable local=daeaf11)
+--- case D: forge lags by 2 (PR-29 shape: local 2 ahead) behind/ahead counts ---
+(case A already shows this)

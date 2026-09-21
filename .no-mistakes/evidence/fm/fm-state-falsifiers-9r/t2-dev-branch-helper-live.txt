@@ -1,0 +1,11 @@
+=== T2 live drive: fm-project-dev-branch.sh contract ===
+--- declared branch resolves ---
+develop
+exit=0
+--- no token -> empty, exit 0 (today's behavior preserved) ---
+exit=0
+--- invalid branch refused with exit 1 (never silently redirects) ---
+error: invalid dev branch "feat//bad" for badproj in /var/folders/pq/dzkdp4y52zg6fq5041jfnxtc0000gn/T/tmp.HaEj9DBHuw/data/projects.md
+exit=1
+--- unknown project -> empty, exit 0 ---
+exit=0
