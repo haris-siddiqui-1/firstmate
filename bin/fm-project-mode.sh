@@ -35,6 +35,12 @@
 # An unknown/missing project or unknown mode falls back to "no-mistakes off" and warns
 # to stderr, so a typo never silently drops the gate.
 # Usage: fm-project-mode.sh [--raw] <project-name>
+
+# A project may also declare the long-lived branch it develops on:
+#   - <name> [<mode> +yolo] [dev:<branch>] - <desc> (added <date>)
+# The dev token rides in the same bracket as the mode, so existing entries keep
+# their meaning and a project without the token behaves exactly as today.
+# fm-project-dev-branch.sh owns reading it; this comment names the shape only.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

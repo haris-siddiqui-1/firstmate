@@ -1,19 +1,21 @@
 #!/usr/bin/env bash
 # Refresh project clones: fast-forward the checked-out branch to its own upstream
-# when safe, and prune local branches whose upstream tracking
+# when safe, or to the declared development base when the checkout sits on the
+# declared development branch, and prune local branches whose upstream tracking
 # branch is gone (the remote branch was deleted, i.e. its PR merged) and that no
 # worktree still needs.
 # Self-heals the one unambiguously safe drift: a clean, detached HEAD that holds
-# no unique commits (it is an ancestor of origin/<default>) and whose <default>
+# no unique commits (it is an ancestor of the development base) and whose default
 # branch is free to check out is re-attached and then fast-forwarded ("recovered:").
 # A clean clone on a named branch (default or not) fast-forwards to that branch's
-# own upstream when strictly behind it. Every other unsafe state - a dirty tree,
-# a branch with no upstream or whose upstream is gone, a detached HEAD with
-# unique commits, or a branch genuinely diverged from its upstream - may hold real
-# work, so it is left untouched and reported as a loud "STUCK: ... - needs attention"
-# warning (quantified against that branch's own upstream, or against
-# origin/<default> for detached HEADs) rather than a quiet drift. Nothing is ever
-# forced, stashed, or discarded.
+# own upstream when strictly behind it, except a checkout on the declared
+# development branch, which fast-forwards to the development base instead. Every
+# other unsafe state - a dirty tree, a branch with no upstream or whose upstream
+# is gone, a detached HEAD with unique commits, or a branch genuinely diverged
+# from its target - may hold real work, so it is left untouched and reported as a
+# loud "STUCK: ... - needs attention" warning (quantified against that branch's
+# own upstream, or against the development base for detached HEADs) rather than a
+# quiet drift. Nothing is ever forced, stashed, or discarded.
 # Still skips (benignly) local-only/no-origin projects, missing remotes/branches,
 # and fetch failures.
 # A candidate under projects/ must be the root of its own work tree: git discovery
@@ -299,10 +301,10 @@ stuck_state() {
 }
 
 # Loud, quantified report for a clone we deliberately leave untouched. Includes
-# how far behind its own upstream (named branch) or origin/<default> (detached
-# HEAD) it is, so a chronically-stuck clone is visibly distinct from a benign
-# one-off skip. A missing or gone upstream has no count to give, so it stays loud
-# without one.
+# how far behind its own upstream (named branch) or the development base
+# (detached HEAD) it is, so a chronically-stuck clone is visibly distinct from a
+# benign one-off skip. A missing or gone upstream has no count to give, so it
+# stays loud without one.
 report_stuck() {
   local state=$1 behind
   if [ -n "$cur" ] && { [ -z "$UPSTREAM" ] || [ "$UPSTREAM_GONE" = yes ]; }; then
@@ -366,7 +368,21 @@ sync_project() {
     echo "$label: skipped: cannot determine default branch"
     return 0
   }
-  BASE="origin/$DEFAULT"
+  if DEV_BRANCH=$("$FM_ROOT/bin/fm-project-dev-branch.sh" "$label" 2>/dev/null); then
+    if [ -n "$DEV_BRANCH" ]; then
+      if git -C "$PROJ" rev-parse --verify --quiet "origin/$DEV_BRANCH^{commit}" >/dev/null; then
+        BASE="origin/$DEV_BRANCH"
+      else
+        echo "$label: skipped: declared development branch origin/$DEV_BRANCH does not exist"
+        return 0
+      fi
+    else
+      BASE="origin/$DEFAULT"
+    fi
+  else
+    echo "$label: skipped: invalid development branch declaration"
+    return 0
+  fi
   if ! git -C "$PROJ" rev-parse --verify --quiet "$BASE^{commit}" >/dev/null; then
     echo "$label: skipped: $BASE does not exist"
     return 0
@@ -380,17 +396,27 @@ sync_project() {
   STUCK_BASE=$BASE
 
   if [ -n "$cur" ]; then
-    # On a named branch - default or not. Move it toward its OWN upstream, not
-    # origin/<default>. A dirty tree must not be disturbed; a missing or gone
-    # upstream has nothing safe to fast-forward to; a branch that is not strictly
-    # behind its upstream (current or holding unique commits) is left untouched.
-    UPSTREAM=$(git -C "$PROJ" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)
+    # On a named branch - default or not. A declared development branch redirects
+    # the target: a checkout on the declared branch is moved toward the
+    # development base instead of its own upstream, so it tracks the line the
+    # project develops on. Every other named branch keeps the fork behavior and
+    # moves toward its own upstream. A dirty tree must not be disturbed; a missing
+    # or gone upstream (undeclared path) has nothing safe to fast-forward to; a
+    # branch that is not strictly behind its target (current or holding unique
+    # commits) is left untouched.
+    if [ -n "$DEV_BRANCH" ] && [ "$cur" = "$DEV_BRANCH" ]; then
+      UPSTREAM=$BASE
+    else
+      UPSTREAM=$(git -C "$PROJ" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)
+    fi
     if [ -z "$UPSTREAM" ] || ! git -C "$PROJ" rev-parse --verify --quiet "$UPSTREAM^{commit}" >/dev/null 2>&1; then
-      if git -C "$PROJ" for-each-ref --format='%(upstream:track)' "refs/heads/$cur" 2>/dev/null | grep -Fxq '[gone]'; then
-        UPSTREAM=$(git -C "$PROJ" for-each-ref --format='%(upstream:short)' "refs/heads/$cur" 2>/dev/null)
-        UPSTREAM_GONE=yes
-      else
-        UPSTREAM=""
+      if [ -z "$DEV_BRANCH" ] || [ "$cur" != "$DEV_BRANCH" ]; then
+        if git -C "$PROJ" for-each-ref --format='%(upstream:track)' "refs/heads/$cur" 2>/dev/null | grep -Fxq '[gone]'; then
+          UPSTREAM=$(git -C "$PROJ" for-each-ref --format='%(upstream:short)' "refs/heads/$cur" 2>/dev/null)
+          UPSTREAM_GONE=yes
+        else
+          UPSTREAM=""
+        fi
       fi
       STUCK_BASE=$BASE
       report_stuck "$(stuck_state)"
@@ -442,12 +468,9 @@ sync_project() {
   fi
 
   # Detached HEAD. Auto-recover only the one unambiguously safe drift: a clean
-  # HEAD that holds no unique commits (it is an ancestor of origin/<default>)
-  # and whose <default> branch is free to check out here. Re-attaching to an
-  # already-published commit strands nothing, and the fast-forward path below
-  # then catches the clone up. Anything else - unique commits, a dirty tree, or
-  # <default> already checked out elsewhere - may hold real work, so it is
-  # reported loudly and left untouched.
+  # HEAD that holds no unique commits (it is an ancestor of the development
+  # base) and whose default branch is free to check out here. Re-attaching to
+  # an already-published commit strands nothing, and the fast-forward path
   if ! { [ "$dirty" = no ] \
       && git -C "$PROJ" merge-base --is-ancestor HEAD "$BASE" 2>/dev/null \
       && ! default_checked_out_elsewhere \
@@ -502,7 +525,6 @@ sync_project() {
     return 0
   }
   echo "$label: recovered: re-attached $DEFAULT, synced $before..$after"
-  return 0
 }
 
 if [ $# -eq 1 ]; then

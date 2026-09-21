@@ -132,8 +132,10 @@ case "${1:-} ${2:-}" in
     merged=${FM_FAKE_PR_MERGED:-true}
     eval "state=\${FM_FAKE_PR_${number}_STATE:-\$state}"
     eval "merged=\${FM_FAKE_PR_${number}_MERGED:-\$merged}"
+    forge_head=${FM_FAKE_PR_HEAD:-${FM_FAKE_RUN_HEAD:-abc1234}}
+    eval "forge_head=\${FM_FAKE_PR_${number}_HEAD:-\$forge_head}"
     [ "${FM_FAKE_PR_READ_FAIL:-0}" = 1 ] && exit 1
-    printf 'state=%s\nmerged=%s\n' "$state" "$merged"
+    printf 'state=%s\nmerged=%s\nhead=%s\n' "$state" "$merged" "$forge_head"
     exit 0 ;;
 esac
 exit 1
@@ -313,12 +315,14 @@ reset_fakes() {
   FM_FAKE_GLAB_READ_FAIL=0
   FM_FAKE_GLAB_READ_LOG=
   unset FM_FAKE_PR_47_STATE FM_FAKE_PR_47_MERGED FM_FAKE_PR_48_STATE FM_FAKE_PR_48_MERGED
+  unset FM_FAKE_PR_HEAD FM_FAKE_PR_47_HEAD FM_FAKE_PR_48_HEAD
   export FM_FAKE_AXI_STATUS FM_FAKE_AXI_STATUS_RUN FM_FAKE_RUNS_LIST FM_FAKE_BUSY FM_FAKE_BUSY_TEXT FM_FAKE_TMUX_MISSING FM_FAKE_TMUX_UNREADABLE
   export FM_FAKE_HERDR_BUSY FM_FAKE_HERDR_MISSING FM_FAKE_HERDR_READ_FAIL FM_FAKE_HERDR_HUSK FM_FAKE_HERDR_AGENT_STATUS FM_FAKE_HERDR_PROCESS FM_FAKE_HERDR_SHELL_PID FM_FAKE_CI_LOGS
   export FM_FAKE_DAEMON_DOWN FM_FAKE_DAEMON_TIMEOUT FM_FAKE_DAEMON_PROBE_LOG FM_FAKE_AXI_HOME
   export FM_FAKE_AXI_HOME_ERROR FM_FAKE_AXI_STATUS_RUN_ERROR FM_FAKE_AXI_STATUS_ERROR
   export FM_FAKE_PR_STATE FM_FAKE_PR_MERGED FM_FAKE_PR_READ_FAIL FM_FAKE_PR_READ_LOG FM_FAKE_PR_STATE_AXI
   export FM_FAKE_GLAB_STATE FM_FAKE_GLAB_READ_FAIL FM_FAKE_GLAB_READ_LOG
+  export FM_FAKE_PR_HEAD FM_FAKE_PR_47_HEAD FM_FAKE_PR_48_HEAD
   export FM_FAKE_PR_47_STATE FM_FAKE_PR_47_MERGED FM_FAKE_PR_48_STATE FM_FAKE_PR_48_MERGED
 }
 
@@ -1309,7 +1313,30 @@ test_terminal_passed() {
   assert_contains "$out" "source: run-step" "passed -> run-step source"
   assert_contains "$out" "run passed: PR merged" "passed run reports merged only after the PR record says merged"
   assert_not_contains "$out" "merged/closed" "passed merged PR must not keep the old ambiguous label"
+  assert_contains "$out" "match" "matching heads report match"
   pass "terminal passed run is authoritative"
+}
+
+test_terminal_passed_diverged_heads_surface_divergence() {
+  reset_fakes
+  local d forge local_short out
+  d=$(new_case passed-diverged)
+  make_repo_on_branch "$d/wt" fm/feat-ddiverged
+  git -C "$d/wt" commit -q --allow-empty -m local-advance
+  FM_FAKE_RUN_HEAD=$(git -C "$d/wt" rev-parse HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-ddiverged.meta" "window=fm:fm-feat-ddiverged" \
+    "worktree=$d/wt" "kind=ship" "pr=https://github.com/o/r/pull/1"
+  forge=$(git -C "$d/wt" rev-parse "HEAD~1")
+  local_short=$(git -C "$d/wt" rev-parse --short=7 HEAD)
+  FM_FAKE_PR_HEAD=$forge
+  FM_FAKE_AXI_STATUS="$(run_passed_with_pr fm/feat-ddiverged https://github.com/o/r/pull/1)"
+  out=$(run_crew_state "$d" feat-ddiverged)
+  assert_contains "$out" "state: done" "diverged passed run -> done"
+  assert_contains "$out" "run passed: PR merged" "diverged passed run still reports merged"
+  assert_contains "$out" "local=$local_short" "diverged line carries the local head"
+  assert_contains "$out" "local+1 pr+0" "one local commit past the forge head reads as behind counts"
+  pass "diverged forge and local heads surface their divergence"
 }
 
 test_terminal_passed_uses_matching_retirement_receipt_without_forge() {
@@ -4709,6 +4736,7 @@ test_ci_fixing_after_green_stays_working
 test_top_level_fixing_ci_running_after_green_stays_working
 test_top_level_fixing_done_log_stays_working
 test_terminal_passed
+test_terminal_passed_diverged_heads_surface_divergence
 test_terminal_passed_uses_matching_retirement_receipt_without_forge
 test_terminal_passed_no_forge_switch_skips_read_but_keeps_receipt
 test_terminal_passed_with_open_pr_does_not_claim_merged

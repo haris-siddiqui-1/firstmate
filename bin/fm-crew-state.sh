@@ -326,39 +326,43 @@ nm_field() {  # <key>
 }
 
 pr_read_record_bounded() {  # <owner> <repo> <number>
-  local record state merged
+  local record state merged head
   # shellcheck disable=SC2016  # The inner script expands after bash -c receives positional args.
   if ! record=$(fm_run_timed 5 bash -c '
     . "$1"
     fm_pr_github_read_record "$2" "$3" "$4" || exit 1
-    printf "state=%s\nmerged=%s\n" "$FM_PR_RECORD_STATE" "$FM_PR_RECORD_MERGED"
+    printf "state=%s\nmerged=%s\nhead=%s\n" "$FM_PR_RECORD_STATE" "$FM_PR_RECORD_MERGED" "$FM_PR_RECORD_HEAD"
   ' _ "$SCRIPT_DIR/fm-pr-lib.sh" "$1" "$2" "$3" 2>/dev/null); then
     return 1
   fi
   state=$(printf '%s\n' "$record" | sed -n 's/^state=//p' | head -1)
   merged=$(printf '%s\n' "$record" | sed -n 's/^merged=//p' | head -1)
+  head=$(printf '%s\n' "$record" | sed -n 's/^head=//p' | head -1)
   [ -n "$state" ] || return 1
   [ "$merged" = true ] || [ "$merged" = false ] || return 1
   FM_PR_RECORD_STATE=$state
   FM_PR_RECORD_MERGED=$merged
+  FM_PR_RECORD_HEAD=$head
 }
 
 mr_read_record_bounded() {  # <host> <path> <number>
-  local record state merged
+  local record state merged head
   # shellcheck disable=SC2016  # The inner script expands after bash -c receives positional args.
   if ! record=$(fm_run_timed 5 bash -c '
     . "$1"
     fm_pr_gitlab_read_record "$2" "$3" "$4" || exit 1
-    printf "state=%s\nmerged=%s\n" "$FM_PR_RECORD_STATE" "$FM_PR_RECORD_MERGED"
+    printf "state=%s\nmerged=%s\nhead=%s\n" "$FM_PR_RECORD_STATE" "$FM_PR_RECORD_MERGED" "$FM_PR_RECORD_HEAD"
   ' _ "$SCRIPT_DIR/fm-pr-lib.sh" "$1" "$2" "$3" 2>/dev/null); then
     return 1
   fi
   state=$(printf '%s\n' "$record" | sed -n 's/^state=//p' | head -1)
   merged=$(printf '%s\n' "$record" | sed -n 's/^merged=//p' | head -1)
+  head=$(printf '%s\n' "$record" | sed -n 's/^head=//p' | head -1)
   [ -n "$state" ] || return 1
   [ "$merged" = true ] || [ "$merged" = false ] || return 1
   FM_PR_RECORD_STATE=$state
   FM_PR_RECORD_MERGED=$merged
+  FM_PR_RECORD_HEAD=$head
 }
 
 passed_pr_detail() {
@@ -386,11 +390,11 @@ passed_pr_detail() {
     && [ "$FM_PR_RETIRE_HOST" = "$host" ] \
     && [ "$FM_PR_RETIRE_PATH" = "$path" ] \
     && [ "$FM_PR_RETIRE_NUMBER" = "$number" ]; then
-    printf 'run passed: PR merged'
+    printf 'run passed: PR merged%s' "$(pr_head_suffix)"
     return
   fi
   if [ "${FM_CREW_STATE_NO_FORGE:-0}" = 1 ]; then
-    printf 'run passed: PR state unknown (forge read skipped)'
+    printf 'run passed: PR state unknown (forge read skipped)%s' "$(pr_head_suffix)"
     return
   fi
 
@@ -399,40 +403,95 @@ passed_pr_detail() {
       owner=${path%%/*}
       repo=${path#*/}
       if ! pr_read_record_bounded "$owner" "$repo" "$number"; then
-        printf 'run passed: PR state unknown (unreadable)'
+        printf 'run passed: PR state unknown (unreadable)%s' "$(pr_head_suffix)"
         return
       fi
       if [ "$FM_PR_RECORD_MERGED" = true ]; then
-        printf 'run passed: PR merged'
+        printf 'run passed: PR merged%s' "$(pr_head_suffix)"
         return
       fi
       state_lc=$(printf '%s' "$FM_PR_RECORD_STATE" | tr '[:upper:]' '[:lower:]')
       case "$state_lc" in
-        open)   printf 'run passed: PR open' ;;
-        closed) printf 'run passed: PR closed' ;;
-        *)      printf 'run passed: PR state %s' "$state_lc" ;;
+        open)   printf 'run passed: PR open%s' "$(pr_head_suffix)" ;;
+        closed) printf 'run passed: PR closed%s' "$(pr_head_suffix)" ;;
+        *)      printf 'run passed: PR state %s%s' "$state_lc" "$(pr_head_suffix)" ;;
       esac
       ;;
     gitlab)
       if ! mr_read_record_bounded "$host" "$path" "$number"; then
-        printf 'run passed: PR state unknown (unreadable)'
+        printf 'run passed: PR state unknown (unreadable)%s' "$(pr_head_suffix)"
         return
       fi
       if [ "$FM_PR_RECORD_MERGED" = true ]; then
-        printf 'run passed: PR merged'
+        printf 'run passed: PR merged%s' "$(pr_head_suffix)"
         return
       fi
       state_lc=$(printf '%s' "$FM_PR_RECORD_STATE" | tr '[:upper:]' '[:lower:]')
       case "$state_lc" in
-        open|opened) printf 'run passed: PR open' ;;
-        closed)      printf 'run passed: PR closed' ;;
-        *)           printf 'run passed: PR state %s' "$state_lc" ;;
+        open|opened) printf 'run passed: PR open%s' "$(pr_head_suffix)" ;;
+        closed)      printf 'run passed: PR closed%s' "$(pr_head_suffix)" ;;
+        *)           printf 'run passed: PR state %s%s' "$state_lc" "$(pr_head_suffix)" ;;
       esac
       ;;
     *)
-      printf 'run passed: PR state unknown (unreadable: %s)' "$url"
+      printf 'run passed: PR state unknown (unreadable: %s)%s' "$url" "$(pr_head_suffix)"
       ;;
   esac
+}
+
+# Head-bearing suffix for the checks-green / merged detail lines: the forge
+# head, the local head, and their divergence, so a reader cannot quote the line
+# without also seeing whether the pull request matches the work. When either
+# head cannot be read, the line says so rather than omitting it, because a
+# silently absent falsifier is the defect being fixed.
+pr_head_suffix() {  # reads FM_PR_RECORD_HEAD, WT
+  local forge_local forge_short local_head local_short behind ahead base
+  if [ -n "${FM_PR_RECORD_HEAD:-}" ]; then
+    forge_local=$FM_PR_RECORD_HEAD
+    forge_short=$(printf '%s' "$forge_local" | cut -c1-7)
+  else
+    forge_short=unreadable
+  fi
+  if [ -n "${WT:-}" ] && [ -d "${WT:-}" ]; then
+    local_head=$(git -C "$WT" rev-parse HEAD 2>/dev/null || true)
+  else
+    local_head=''
+  fi
+  if [ -n "$local_head" ]; then
+    local_short=$(printf '%s' "$local_head" | cut -c1-7)
+  else
+    local_short=unreadable
+  fi
+  if [ "$forge_short" = unreadable ] || [ "$local_short" = unreadable ]; then
+    printf ' (pr=%s local=%s)' "$forge_short" "$local_short"
+    return
+  fi
+  if [ "$forge_local" = "$local_head" ]; then
+    printf ' (pr=%s local=%s match)' "$forge_short" "$local_short"
+    return
+  fi
+  if base=$(git -C "$WT" merge-base "$forge_local" "$local_head" 2>/dev/null) && [ -n "$base" ]; then
+    behind=$(git -C "$WT" rev-list --count "$forge_local..$local_head" 2>/dev/null || true)
+    ahead=$(git -C "$WT" rev-list --count "$local_head..$forge_local" 2>/dev/null || true)
+    case "$behind:$ahead" in
+      *[!0-9]*:*|*:*[!0-9]*) printf ' (pr=%s local=%s DIVERGED)' "$forge_short" "$local_short" ;;
+      *) printf ' (pr=%s local=%s local+%s pr+%s)' "$forge_short" "$local_short" "$behind" "$ahead" ;;
+    esac
+    return
+  fi
+  printf ' (pr=%s local=%s DIVERGED)' "$forge_short" "$local_short"
+}
+
+# Head-bearing suffix for checks-green lines that carry no forge read: the run
+# record's own head against the worktree HEAD. Same shape as pr_head_suffix so
+# every green line falsifies the same way; an absent run head or worktree HEAD
+# reads unreadable rather than vanishing.
+pr_run_head_suffix() {  # reads RUN_OUT, WT
+  local run_head
+  FM_PR_RECORD_HEAD=$(strip_quotes "$(nm_field head)")
+  run_head=$FM_PR_RECORD_HEAD
+  FM_PR_RECORD_HEAD=$run_head
+  pr_head_suffix
 }
 # Finding count from a findings[N]{...} table header; empty when none.
 nm_findings_count() {
@@ -696,6 +755,7 @@ nm_reclassify_failed_run_as_held_green() {
   local pr_url
   pr_url=$(strip_quotes "$(nm_field pr)")
   [ -n "$pr_url" ] && RUN_DETAIL="$RUN_DETAIL: $pr_url"
+  RUN_DETAIL="$RUN_DETAIL$(pr_run_head_suffix)"
   return 0
 }
 
@@ -1010,7 +1070,7 @@ if [ "$HAVE_RUN" = 1 ]; then
     if [ -n "$outcome" ]; then
       case "$outcome" in
         passed)        RUN_STATE="done"; RUN_DETAIL=$(passed_pr_detail) ;;
-        checks-passed) RUN_STATE="done"; RUN_DETAIL="checks green: PR ready for review" ;;
+        checks-passed) RUN_STATE="done"; RUN_DETAIL="checks green: PR ready for review$(pr_run_head_suffix)" ;;
         failed)
           if nm_reclassify_failed_run_as_held_green; then :; else
             RUN_STATE=failed; RUN_DETAIL="run failed"
@@ -1056,7 +1116,7 @@ if [ "$HAVE_RUN" = 1 ]; then
             CI_LOG_STATE=$(nm_ci_checks_state)
             if [ "$CI_LOG_STATE" = green ]; then
               RUN_STATE="done"
-              RUN_DETAIL="checks green: PR ready for review (still monitoring for merge/close)"
+              RUN_DETAIL="checks green: PR ready for review (still monitoring for merge/close)$(pr_run_head_suffix)"
             fi
             ;;
           fixing)
