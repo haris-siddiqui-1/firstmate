@@ -4,18 +4,26 @@
 # declared development branch, and prune local branches whose upstream tracking
 # branch is gone (the remote branch was deleted, i.e. its PR merged) and that no
 # worktree still needs.
-# Self-heals the one unambiguously safe drift: a clean, detached HEAD that holds
-# no unique commits (it is an ancestor of the development base) and whose default
-# branch is free to check out is re-attached and then fast-forwarded ("recovered:").
+# Self-heals the one unambiguously safe drift: a clean checkout that holds no
+# unique commits (it is an ancestor of the development base) and whose default
+# branch is free to check out is re-attached to the default branch and then
+# fast-forwarded ("recovered:") - a detached HEAD or a named branch alike.
+# A checkout that is current with its own upstream but sits off the default line
+# is never reported "already current".
+# With nothing unique it takes the re-attach path above.
+# Otherwise it is reported loudly, naming the branch, its upstream, and how far
+# behind the base it sits.
 # A clean clone on a named branch (default or not) fast-forwards to that branch's
 # own upstream when strictly behind it, except a checkout on the declared
-# development branch, which fast-forwards to the development base instead. Every
-# other unsafe state - a dirty tree, a branch with no upstream or whose upstream
-# is gone, a detached HEAD with unique commits, or a branch genuinely diverged
-# from its target - may hold real work, so it is left untouched and reported as a
-# loud "STUCK: ... - needs attention" warning (quantified against that branch's
-# own upstream, or against the development base for detached HEADs) rather than a
-# quiet drift. Nothing is ever forced, stashed, or discarded.
+# development branch, which fast-forwards to the development base instead.
+# Every other unsafe state - a dirty tree, a branch with no upstream or whose
+# upstream is gone, a detached HEAD with unique commits, a named branch holding
+# unique commits off the default line, or a branch genuinely diverged from its
+# target - may hold real work, so it is left untouched and reported as a loud
+# "STUCK: ... - needs attention" warning (quantified against that branch's own
+# upstream, or against the development base for detached HEADs and unrecovered
+# off-default checkouts) rather than a quiet drift.
+# Nothing is ever forced, stashed, or discarded.
 # Still skips (benignly) local-only/no-origin projects, missing remotes/branches,
 # and fetch failures.
 # A candidate under projects/ must be the root of its own work tree: git discovery
@@ -315,6 +323,71 @@ report_stuck() {
   echo "$label: STUCK: on $state, $behind commits behind $STUCK_BASE - needs attention"
 }
 
+report_off_default_current() {
+  local base_behind=$1
+  echo "$label: STUCK: on $cur, current with its own remote but $base_behind behind $BASE - needs attention"
+}
+
+report_off_default_unique() {
+  echo "$label: STUCK: on branch $cur, holds unique commits - needs attention"
+}
+
+# Re-attach a clean checkout with no unique commits to the default branch and
+# fast-forward it to the development base. The caller has already verified the
+# recovery preconditions (clean, HEAD an ancestor of $BASE, default free here,
+# local default safe). Reports "recovered:" and returns 0 on every path.
+recover_clean_to_default() {
+  if ! git -C "$PROJ" checkout --quiet "$DEFAULT" 2>/dev/null; then
+    report_stuck "$(stuck_state)"
+    return 0
+  fi
+  cur=$DEFAULT
+  UPSTREAM=$BASE
+  STUCK_BASE=$BASE
+  local post_local post_remote post_before post_after post_merge
+  post_local=$(git -C "$PROJ" rev-parse "$DEFAULT") || {
+    echo "$label: skipped: cannot read local $DEFAULT"
+    return 0
+  }
+  post_remote=$(git -C "$PROJ" rev-parse "$BASE") || {
+    echo "$label: skipped: cannot read $BASE"
+    return 0
+  }
+  if [ "$post_local" = "$post_remote" ]; then
+    echo "$label: recovered: re-attached $DEFAULT (already current)"
+    return 0
+  fi
+  if ! git -C "$PROJ" merge-base --is-ancestor "$DEFAULT" "$BASE"; then
+    report_stuck "diverged $DEFAULT"
+    return 0
+  fi
+  post_before=$(git -C "$PROJ" rev-parse --short "$DEFAULT") || {
+    echo "$label: skipped: cannot read local $DEFAULT"
+    return 0
+  }
+  if ! post_merge=$(git -C "$PROJ" merge --ff-only "$BASE" 2>&1); then
+    reason="fast-forward failed"
+    if [ -n "$post_merge" ]; then
+      reason="$reason: $(first_line "$post_merge")"
+    fi
+    echo "$label: skipped: $reason"
+    return 0
+  fi
+  post_after=$(git -C "$PROJ" rev-parse --short "$DEFAULT") || {
+    echo "$label: skipped: fast-forward completed but cannot read local $DEFAULT"
+    return 0
+  }
+  echo "$label: recovered: re-attached $DEFAULT, synced $post_before..$post_after"
+  return 0
+}
+
+clean_recoverable_to_default() {
+  [ "$dirty" = no ] \
+    && git -C "$PROJ" merge-base --is-ancestor HEAD "$BASE" 2>/dev/null \
+    && ! default_checked_out_elsewhere \
+    && local_default_safe_for_recovery
+}
+
 sync_project() {
   PROJ=$1
   label=$(project_label)
@@ -423,6 +496,12 @@ sync_project() {
       return 0
     fi
     STUCK_BASE=$UPSTREAM
+    if [ "$dirty" = yes ] && [ "$cur" != "$DEFAULT" ] && { [ -z "$DEV_BRANCH" ] || [ "$cur" != "$DEV_BRANCH" ]; } \
+      && [ "$(git -C "$PROJ" rev-parse HEAD)" = "$(git -C "$PROJ" rev-parse "$UPSTREAM" 2>/dev/null)" ] \
+      && git -C "$PROJ" merge-base --is-ancestor HEAD "$BASE" 2>/dev/null; then
+      report_off_default_current "$(git -C "$PROJ" rev-list --count "HEAD..$BASE" 2>/dev/null || echo "?")"
+      return 0
+    fi
     if [ "$dirty" = yes ]; then
       report_stuck "$(stuck_state)"
       return 0
@@ -436,7 +515,19 @@ sync_project() {
       return 0
     }
     if [ "$local_rev" = "$remote_rev" ]; then
-      echo "$label: already current"
+      if { [ "$cur" = "$DEFAULT" ] || { [ -n "$DEV_BRANCH" ] && [ "$cur" = "$DEV_BRANCH" ]; }; }; then
+        echo "$label: already current"
+        return 0
+      fi
+      if clean_recoverable_to_default; then
+        recover_clean_to_default
+        return 0
+      fi
+      if git -C "$PROJ" merge-base --is-ancestor HEAD "$BASE" 2>/dev/null; then
+        report_off_default_current "$(git -C "$PROJ" rev-list --count "HEAD..$BASE" 2>/dev/null || echo "?")"
+      else
+        report_off_default_unique
+      fi
       return 0
     fi
     if ! git -C "$PROJ" merge-base --is-ancestor HEAD "$UPSTREAM"; then
@@ -471,60 +562,12 @@ sync_project() {
   # HEAD that holds no unique commits (it is an ancestor of the development
   # base) and whose default branch is free to check out here. Re-attaching to
   # an already-published commit strands nothing, and the fast-forward path
-  if ! { [ "$dirty" = no ] \
-      && git -C "$PROJ" merge-base --is-ancestor HEAD "$BASE" 2>/dev/null \
-      && ! default_checked_out_elsewhere \
-      && local_default_safe_for_recovery; }; then
+  if ! clean_recoverable_to_default; then
     report_stuck "$(stuck_state)"
     return 0
   fi
-  if ! git -C "$PROJ" checkout --quiet "$DEFAULT" 2>/dev/null; then
-    report_stuck "$(stuck_state)"
-    return 0
-  fi
-  cur=$DEFAULT
-  UPSTREAM=$BASE
-  STUCK_BASE=$BASE
-
-  if ! git -C "$PROJ" rev-parse --verify --quiet "$DEFAULT^{commit}" >/dev/null; then
-    echo "$label: skipped: local $DEFAULT does not exist"
-    return 0
-  fi
-
-  local_rev=$(git -C "$PROJ" rev-parse "$DEFAULT") || {
-    echo "$label: skipped: cannot read local $DEFAULT"
-    return 0
-  }
-  remote_rev=$(git -C "$PROJ" rev-parse "$BASE") || {
-    echo "$label: skipped: cannot read $BASE"
-    return 0
-  }
-  if [ "$local_rev" = "$remote_rev" ]; then
-    echo "$label: recovered: re-attached $DEFAULT (already current)"
-    return 0
-  fi
-  if ! git -C "$PROJ" merge-base --is-ancestor "$DEFAULT" "$BASE"; then
-    report_stuck "diverged $DEFAULT"
-    return 0
-  fi
-
-  before=$(git -C "$PROJ" rev-parse --short "$DEFAULT") || {
-    echo "$label: skipped: cannot read local $DEFAULT"
-    return 0
-  }
-  if ! merge_output=$(git -C "$PROJ" merge --ff-only "$BASE" 2>&1); then
-    reason="fast-forward failed"
-    if [ -n "$merge_output" ]; then
-      reason="$reason: $(first_line "$merge_output")"
-    fi
-    echo "$label: skipped: $reason"
-    return 0
-  fi
-  after=$(git -C "$PROJ" rev-parse --short "$DEFAULT") || {
-    echo "$label: skipped: fast-forward completed but cannot read local $DEFAULT"
-    return 0
-  }
-  echo "$label: recovered: re-attached $DEFAULT, synced $before..$after"
+  recover_clean_to_default
+  return 0
 }
 
 if [ $# -eq 1 ]; then

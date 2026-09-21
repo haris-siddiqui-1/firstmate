@@ -329,6 +329,52 @@ test_dirty_is_stuck_untouched() {
   pass "dirty working tree is reported STUCK and left untouched"
 }
 
+test_non_default_branch_current_upstream_behind_default_recovers() {
+  local home clone out work after
+  home=$(new_home)
+  clone=$(build_pair "$home" delta-merged)
+  work="$home/work-delta-merged"
+  git -C "$work" checkout -q -b feature
+  commit_file "$work" feature.txt f0 F0
+  git -C "$work" checkout -q main
+  git -C "$work" merge -q --no-ff -m "merge F0" feature
+  git -C "$work" push -q origin main feature
+  git -C "$clone" fetch --quiet origin
+  git -C "$clone" checkout -q feature
+  advance_origin "$home" delta-merged C1
+  advance_origin "$home" delta-merged C2
+
+  out=$(run_sync "$home" "$clone")
+
+  assert_contains "$out" "delta-merged: recovered: re-attached main, synced" "merged branch current with its own remote re-attaches and syncs"
+  assert_not_contains "$out" "already current" "re-attached clone is not reported already current"
+  [ "$(git -C "$clone" symbolic-ref --short HEAD 2>/dev/null)" = "main" ] || fail "expected re-attach to main, still on feature"
+  after=$(head_sha "$clone")
+  [ "$after" = "$(git -C "$clone" rev-parse origin/main)" ] || fail "expected HEAD at origin/main after recovery"
+  pass "merged feature branch current with its own remote re-attaches to the default branch"
+}
+
+test_non_default_branch_unique_commit_never_reports_current() {
+  local home clone out before
+  home=$(new_home)
+  clone=$(build_pair "$home" delta-unique)
+  git -C "$clone" checkout -q -b feature
+  commit_file "$clone" local.txt local "local unique feature commit"
+  git -C "$clone" push -q -u origin feature
+  advance_origin "$home" delta-unique C1
+  advance_origin "$home" delta-unique C2
+  before=$(head_sha "$clone")
+
+  out=$(run_sync "$home" "$clone")
+
+  assert_not_contains "$out" "already current" "clone with unique commits is never reported already current"
+  assert_contains "$out" "delta-unique: STUCK:" "clone with unique commits is reported STUCK"
+  assert_contains "$out" "holds unique commits" "STUCK names the unique-commit state"
+  [ "$(git -C "$clone" symbolic-ref --short HEAD)" = "feature" ] || fail "unique-commit checkout was moved"
+  [ "$(head_sha "$clone")" = "$before" ] || fail "unique-commit HEAD was moved"
+  pass "branch with unique commits is reported, never relocated"
+}
+
 test_non_default_branch_behind_upstream_fast_forwards() {
   local home clone out before after
   home=$(new_home)
@@ -813,7 +859,8 @@ test_detached_clean_ancestor_recovers
 test_detached_unique_commit_is_stuck_untouched
 test_detached_clean_ancestor_with_diverged_local_default_is_stuck_untouched
 test_dirty_is_stuck_untouched
-test_non_default_branch_behind_upstream_fast_forwards
+test_non_default_branch_current_upstream_behind_default_recovers
+test_non_default_branch_unique_commit_never_reports_current
 test_non_default_branch_dirty_is_stuck_untouched
 test_non_default_branch_diverged_is_stuck_untouched
 test_non_default_branch_without_upstream_is_stuck_untouched
