@@ -428,20 +428,29 @@ FM_COMPOSER_LEFTBAR_FOOTER_RE_DEFAULT='^(Build|Plan)[[:space:]]+·[[:space:]]+'
 # git, and context cells. Verified live through Herdr on omp 18.1.11:
 # ` π  · ◔ GPT-6-Astra · 🌳 …-workspace · ⑂ detached · ◫ 15.4%/272K ⟲ · (sub)`
 # idle under the unicode preset, ` 󰵗  ·  qwen3:8b ·  … ·  36.7%/41K` under
-# nerd, and ` ⠧ 11s  · …` while busy. Without this rule the bare composer's
-# wrap region walks straight into that row and an idle omp pane reads
-# `pending`, the false verdict that skipped the doorbell on the first live omp
-# worker. A row is omp status furniture when it opens with omp's identity cell
-# then a middle dot (`π` under the unicode preset, `󰵗` under nerd: the
-# `icon.omp` of those omp 18.1.11 presets, never an arbitrary short token, so
-# a wrapped typed row such as `fix · tests` stays composer input; the ascii
-# preset's `pi` is deliberately absent because that preset's `sep.dot` is
-# ` - `, so its status row never carries a middle dot and a `pi ·` alternative
-# could only ever match typed text), when it opens with one of omp's spinner
-# frames then an elapsed cell, or when it carries the context-usage cell after
-# a middle dot. It is consulted only as the boundary BELOW a bare composer,
-# never on the composer row itself.
-FM_COMPOSER_OMP_STATUS_RE_DEFAULT='^[[:space:]]*(π|󰵗)[[:space:]]+·[[:space:]]|^[[:space:]]*'"$FM_OMP_SPINNER_FRAMES_RE"'[[:space:]]+[0-9]+[smh]([[:space:]]|$)|[[:space:]]·[[:space:]].*[0-9]+(\.[0-9]+)?%/[0-9]+K'
+# nerd, and ` ⠧ 11s  · …` while busy; re-verified live on omp 18.2.2, which
+# runs the ASCII preset on this machine: ` pi · [xhi] Muse Spark 1.3
+# Contributor · [wt] … · ctx: 20.0%/1M [A]` idle, and ` - 30m · …`, ` | 1h ·
+# …`, ` / 9m · …`, ` \ 26m · …` while busy. Without this rule the bare
+# composer's wrap region walks straight into that row and an idle omp pane
+# reads `pending`, the false verdict that skipped the doorbell on the first
+# live omp worker. A row is omp status furniture when it opens with omp's
+# identity cell then a middle dot (`π` under the unicode preset, `󰵗` under
+# nerd, `pi` under ASCII: the `icon.omp` of those omp presets, never an
+# arbitrary short token, so a wrapped typed row such as `fix · tests` stays
+# composer input), when it opens with one of omp's spinner frames then an
+# elapsed cell (the braille activity/status sets under unicode and nerd, the
+# ASCII frames `/`, `|`, `-`, `\` beside them: the ASCII branch requires the
+# middle dot after the elapsed cell because a bare `<frame> <elapsed>` has no
+# model cell and a typed row such as `| 1h of meetings` must stay input), or
+# when it carries the context-usage cell after a middle dot (a `K` or `M`
+# suffix: omp 18.2.2's ASCII footer renders `ctx: 20.0%/1M`). The residual
+# risk is typed text that opens with exactly `pi ·`, or an ASCII frame plus
+# an elapsed cell plus ` · `: those match only on rows BELOW a bare composer,
+# never on the composer row itself, so a false furniture read needs the typed
+# text to sit entirely below an empty `❯` row. It is consulted only as the
+# boundary BELOW a bare composer, never on the composer row itself.
+FM_COMPOSER_OMP_STATUS_RE_DEFAULT='^[[:space:]]*(π|󰵗|pi)[[:space:]]+·[[:space:]]|^[[:space:]]*'"$FM_OMP_SPINNER_FRAMES_RE"'[[:space:]]+[0-9]+[smh]([[:space:]]|$)|^[[:space:]]*[/|\\-][[:space:]]+[0-9]+[smh][[:space:]]+·|[[:space:]]·[[:space:]].*[0-9]+(\.[0-9]+)?%/[0-9]+[KM]'
 # Braille-pattern cells (U+2800..U+28FF) are animation furniture: codex-cli
 # 0.154.0 draws an idle "starfield" of them on the row above its `›` prompt
 # row, on the `›` row itself after the dim `Ask Codex to do anything`
