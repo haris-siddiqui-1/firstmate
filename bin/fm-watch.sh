@@ -1607,6 +1607,28 @@ captain_call_stale_bound() {  # <window-key> <task>
   stale_wait_throttled "$key" "$STALE_WAIT_DECLARATION"
 }
 
+# Bound a due stale alarm for a lane parked at a verified human-owed validation
+# gate. wedge_wait_evidence owns what counts as evidence (a human-owed gate plus
+# an open needs-decision bound to its run); this is only its throttle half for
+# the two first-sight paths that never reach the wedge timer, so a churning pane
+# does not re-alarm every new hash for a wait already surfaced. Returns 0 to
+# absorb when the wait is verified and its re-surface window is still young, 1
+# otherwise; on a verified-but-unthrottled first sight it leaves the parked scope
+# in STALE_WAIT_DECLARATION so the caller's own wake records it, exactly as
+# captain_call_stale_bound does for its scope.
+parked_gate_stale_bound() {  # <window-key> <task>
+  local key=$1 task=$2 statusf run scope
+  STALE_WAIT_DECLARATION=
+  [ -e "$CONFIG/wedge-defer-parked-gate" ] || return 1
+  statusf="$STATE/$task.status"
+  status_has_open_needs_decision "$statusf" || return 1
+  run=$(crew_gate_awaits_human_decision "$task") || return 1
+  status_has_open_needs_decision "$statusf" "$run" || return 1
+  scope="parked-gate:$run:$(fm_wake_signal_sig "$statusf" || true)"
+  STALE_WAIT_DECLARATION=$scope
+  stale_wait_throttled "$key" "$scope"
+}
+
 # Surface a stale pane no classifier could resolve, so firstmate inspects it: it
 # may have finished through an interactive menu that wrote no status, be waiting on
 # a decision, or be wedged. pause_state_class deliberately answers `none` for a
@@ -1659,6 +1681,9 @@ surface_nonterminal_stale() {  # <window> <hash>
   elif captain_call_stale_bound "$key" "$task"; then
     bounded=0
     throttled=0
+  elif parked_gate_stale_bound "$key" "$task"; then
+    bounded=0
+    throttled=0
   elif [ -n "$STALE_WAIT_DECLARATION" ]; then
     bounded=0
   fi
@@ -1684,7 +1709,7 @@ surface_nonterminal_stale() {  # <window> <hash>
     clear_pause_state "$key"
   fi
   if [ "$throttled" -eq 0 ]; then
-    triage_log "absorbed non-terminal stale (declared wait or open captain call already re-surfaced this window): $win"
+    triage_log "absorbed non-terminal stale (verified wait already re-surfaced this window): $win"
     return 0
   fi
   wake "stale: $win"
@@ -2705,6 +2730,17 @@ EOF
               rm -f "$ssf"
               clear_write_tracking "$key"
               triage_log "absorbed stale (open captain call already surfaced for this status): $w"
+            elif parked_gate_stale_bound "$key" "$task"; then
+              # The same bound for a verified human-owed validation gate: the
+              # captain-relevant decision was already surfaced through the signal
+              # path, and a churning pane has nothing new to add inside the
+              # re-surface window. Only the repetition is bounded - the first
+              # sight still alarms (or the wedge timer still defers it), and a
+              # new declaration or an elapsed window alarms again.
+              printf '%s' "$h" > "$sf"
+              rm -f "$ssf"
+              clear_write_tracking "$key"
+              triage_log "absorbed stale (verified parked gate already surfaced for this status): $w"
             else
               fm_wake_append stale "$w" "stale: $w" || exit 1
               stale_wait_record "$key"
