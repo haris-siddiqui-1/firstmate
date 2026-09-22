@@ -329,6 +329,52 @@ test_dirty_is_stuck_untouched() {
   pass "dirty working tree is reported STUCK and left untouched"
 }
 
+test_non_default_branch_current_upstream_behind_default_recovers() {
+  local home clone out work after
+  home=$(new_home)
+  clone=$(build_pair "$home" delta-merged)
+  work="$home/work-delta-merged"
+  git -C "$work" checkout -q -b feature
+  commit_file "$work" feature.txt f0 F0
+  git -C "$work" checkout -q main
+  git -C "$work" merge -q --no-ff -m "merge F0" feature
+  git -C "$work" push -q origin main feature
+  git -C "$clone" fetch --quiet origin
+  git -C "$clone" checkout -q feature
+  advance_origin "$home" delta-merged C1
+  advance_origin "$home" delta-merged C2
+
+  out=$(run_sync "$home" "$clone")
+
+  assert_contains "$out" "delta-merged: recovered: re-attached main, synced" "merged branch current with its own remote re-attaches and syncs"
+  assert_not_contains "$out" "already current" "re-attached clone is not reported already current"
+  [ "$(git -C "$clone" symbolic-ref --short HEAD 2>/dev/null)" = "main" ] || fail "expected re-attach to main, still on feature"
+  after=$(head_sha "$clone")
+  [ "$after" = "$(git -C "$clone" rev-parse origin/main)" ] || fail "expected HEAD at origin/main after recovery"
+  pass "merged feature branch current with its own remote re-attaches to the default branch"
+}
+
+test_non_default_branch_unique_commit_never_reports_current() {
+  local home clone out before
+  home=$(new_home)
+  clone=$(build_pair "$home" delta-unique)
+  git -C "$clone" checkout -q -b feature
+  commit_file "$clone" local.txt local "local unique feature commit"
+  git -C "$clone" push -q -u origin feature
+  advance_origin "$home" delta-unique C1
+  advance_origin "$home" delta-unique C2
+  before=$(head_sha "$clone")
+
+  out=$(run_sync "$home" "$clone")
+
+  assert_not_contains "$out" "already current" "clone with unique commits is never reported already current"
+  assert_contains "$out" "delta-unique: STUCK:" "clone with unique commits is reported STUCK"
+  assert_contains "$out" "holds unique commits" "STUCK names the unique-commit state"
+  [ "$(git -C "$clone" symbolic-ref --short HEAD)" = "feature" ] || fail "unique-commit checkout was moved"
+  [ "$(head_sha "$clone")" = "$before" ] || fail "unique-commit HEAD was moved"
+  pass "branch with unique commits is reported, never relocated"
+}
+
 test_non_default_branch_behind_upstream_fast_forwards() {
   local home clone out before after
   home=$(new_home)
@@ -509,6 +555,37 @@ test_declared_dev_branch_syncs_that_branch() {
   [ "$(git -C "$clone" rev-parse develop)" = "$(git -C "$clone" rev-parse origin/develop)" ] \
     || fail "expected local develop at origin/develop after sync"
   pass "declared development branch syncs that branch"
+}
+
+test_declared_dev_branch_off_default_recovers_to_dev_branch() {
+  local home clone out work
+  home=$(new_home)
+  clone=$(build_pair "$home" devrec)
+  work="$home/work-devrec"
+  git -C "$work" checkout -q -b develop
+  commit_file "$work" dev.txt d1 D1
+  git -C "$work" push -q -u origin develop
+  git -C "$work" checkout -q -b feature
+  commit_file "$work" feature.txt f1 F1
+  git -C "$work" push -q -u origin feature
+  git -C "$work" checkout -q develop
+  git -C "$work" merge -q --no-ff -m "merge F1" feature
+  git -C "$work" push -q origin develop
+  git -C "$clone" fetch --quiet origin
+  git -C "$clone" checkout -q feature
+  mkdir -p "$home/data"
+  printf -- '- devrec [no-mistakes] [dev:develop] - test project (added 2026-09-21)\n' > "$home/data/projects.md"
+
+  out=$(run_sync "$home" devrec)
+
+  assert_contains "$out" "devrec: recovered: re-attached develop" "merged off-default checkout re-attaches the declared branch"
+  assert_not_contains "$out" "re-attached main" "recovery never fast-forwards local main onto the declared line"
+  [ "$(git -C "$clone" symbolic-ref --short HEAD 2>/dev/null)" = "develop" ] || fail "expected re-attach to develop"
+  [ "$(git -C "$clone" rev-parse develop)" = "$(git -C "$clone" rev-parse origin/develop)" ] \
+    || fail "expected local develop at origin/develop after recovery"
+  [ "$(git -C "$clone" rev-parse main)" = "$(git -C "$clone" rev-parse origin/main)" ] \
+    || fail "local main must stay on its own line"
+  pass "declared dev branch recovery re-attaches the declared branch"
 }
 
 test_missing_dev_branch_declaration_skips_loudly() {
@@ -813,6 +890,8 @@ test_detached_clean_ancestor_recovers
 test_detached_unique_commit_is_stuck_untouched
 test_detached_clean_ancestor_with_diverged_local_default_is_stuck_untouched
 test_dirty_is_stuck_untouched
+test_non_default_branch_current_upstream_behind_default_recovers
+test_non_default_branch_unique_commit_never_reports_current
 test_non_default_branch_behind_upstream_fast_forwards
 test_non_default_branch_dirty_is_stuck_untouched
 test_non_default_branch_diverged_is_stuck_untouched
@@ -823,6 +902,7 @@ test_already_current_unchanged
 test_no_origin_skipped
 test_local_only_skipped
 test_declared_dev_branch_syncs_that_branch
+test_declared_dev_branch_off_default_recovers_to_dev_branch
 test_missing_dev_branch_declaration_skips_loudly
 test_single_project_by_bare_name_resolves
 test_single_project_by_bare_name_ignores_cwd_shadow

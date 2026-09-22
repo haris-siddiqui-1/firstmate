@@ -451,8 +451,9 @@ Invoked in a primary home, `/stow` then cascades the same sweep to every registe
 
 The locked session-start deferred network stage, PR-based teardown, and merged-PR wake handling refresh remote-backed project clones when the clone is safe to move.
 Wake-time refreshes can target a single clone by project name, so the primary home also catches up when a secondmate reports a merge from its own home.
-Clean clones fast-forward the checked-out branch to its own upstream, and a clean detached HEAD that holds no unique commits is re-attached to the default branch before the same fast-forward path runs.
-Dirty clones, branches with no upstream or whose upstream is gone, detached HEADs with unique commits, branches genuinely diverged from (or ahead of) their upstream, and default branches checked out in another worktree are reported as `STUCK:` and left untouched, quantified against that branch's own upstream (against `origin/<default>` for detached HEADs, and with no count when the upstream is missing or gone).
+Clean clones fast-forward the checked-out branch to its own upstream, and a clean checkout that holds no unique commits is re-attached to the recovery target (the declared development branch when one is set, else the default branch) before the same fast-forward path runs.
+A checkout that is current with its own upstream but behind the development base is never reported current.
+Dirty clones, branches with no upstream or whose upstream is gone, detached HEADs with unique commits, named branches holding unique commits off the development line, branches genuinely diverged from (or ahead of) their upstream, and recovery targets checked out in another worktree are reported as `STUCK:` and left untouched, quantified against that branch's own upstream (against the development base for detached HEADs and unrecovered off-default checkouts, and with no count when the upstream is missing or gone).
 Fetches blocked by an orphaned `.git/packed-refs.lock` use bounded retries and remove the lock only when the shared staleness proof can prove it abandoned; [configuration.md](configuration.md#toolchain) owns the recovery details and tuning knobs.
 Local-only projects, clones without an origin remote, and fetch failures remain benign skips.
 The refresh also prunes local branches whose remote is gone and that no worktree still needs.
