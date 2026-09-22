@@ -557,6 +557,37 @@ test_declared_dev_branch_syncs_that_branch() {
   pass "declared development branch syncs that branch"
 }
 
+test_declared_dev_branch_off_default_recovers_to_dev_branch() {
+  local home clone out work
+  home=$(new_home)
+  clone=$(build_pair "$home" devrec)
+  work="$home/work-devrec"
+  git -C "$work" checkout -q -b develop
+  commit_file "$work" dev.txt d1 D1
+  git -C "$work" push -q -u origin develop
+  git -C "$work" checkout -q -b feature
+  commit_file "$work" feature.txt f1 F1
+  git -C "$work" push -q -u origin feature
+  git -C "$work" checkout -q develop
+  git -C "$work" merge -q --no-ff -m "merge F1" feature
+  git -C "$work" push -q origin develop
+  git -C "$clone" fetch --quiet origin
+  git -C "$clone" checkout -q feature
+  mkdir -p "$home/data"
+  printf -- '- devrec [no-mistakes] [dev:develop] - test project (added 2026-09-21)\n' > "$home/data/projects.md"
+
+  out=$(run_sync "$home" devrec)
+
+  assert_contains "$out" "devrec: recovered: re-attached develop" "merged off-default checkout re-attaches the declared branch"
+  assert_not_contains "$out" "re-attached main" "recovery never fast-forwards local main onto the declared line"
+  [ "$(git -C "$clone" symbolic-ref --short HEAD 2>/dev/null)" = "develop" ] || fail "expected re-attach to develop"
+  [ "$(git -C "$clone" rev-parse develop)" = "$(git -C "$clone" rev-parse origin/develop)" ] \
+    || fail "expected local develop at origin/develop after recovery"
+  [ "$(git -C "$clone" rev-parse main)" = "$(git -C "$clone" rev-parse origin/main)" ] \
+    || fail "local main must stay on its own line"
+  pass "declared dev branch recovery re-attaches the declared branch"
+}
+
 test_missing_dev_branch_declaration_skips_loudly() {
   local home clone out
   home=$(new_home)
@@ -871,6 +902,7 @@ test_already_current_unchanged
 test_no_origin_skipped
 test_local_only_skipped
 test_declared_dev_branch_syncs_that_branch
+test_declared_dev_branch_off_default_recovers_to_dev_branch
 test_missing_dev_branch_declaration_skips_loudly
 test_single_project_by_bare_name_resolves
 test_single_project_by_bare_name_ignores_cwd_shadow

@@ -5,8 +5,9 @@
 # branch is gone (the remote branch was deleted, i.e. its PR merged) and that no
 # worktree still needs.
 # Self-heals the one unambiguously safe drift: a clean checkout that holds no
-# unique commits (it is an ancestor of the development base) and whose default
-# branch is free to check out is re-attached to the default branch and then
+# unique commits (it is an ancestor of the development base) and whose recovery
+# target (the declared development branch when one is set, else the default
+# branch) is free to check out is re-attached to that target and then
 # fast-forwarded ("recovered:") - a detached HEAD or a named branch alike.
 # A checkout that is current with its own upstream but sits off the default line
 # is never reported "already current".
@@ -265,18 +266,28 @@ prune_gone_branches() {
     --format='%(refname:short) %(upstream:track)' refs/heads 2>/dev/null)
 }
 
-# True when some worktree of $PROJ has $DEFAULT checked out (so we cannot attach
-# to it here). The current worktree is detached when this is consulted, so any
-# match is necessarily another worktree.
-default_checked_out_elsewhere() {
-  git -C "$PROJ" worktree list --porcelain 2>/dev/null \
-    | sed -n 's#^branch refs/heads/##p' \
-    | grep -Fxq -- "$DEFAULT"
+recovery_target() {
+  if [ -n "${DEV_BRANCH:-}" ]; then
+    printf '%s\n' "$DEV_BRANCH"
+  else
+    printf '%s\n' "$DEFAULT"
+  fi
 }
 
-local_default_safe_for_recovery() {
-  ! git -C "$PROJ" rev-parse --verify --quiet "$DEFAULT^{commit}" >/dev/null \
-    || git -C "$PROJ" merge-base --is-ancestor "$DEFAULT" "$BASE" 2>/dev/null
+# True when some worktree of $PROJ has the recovery target checked out (so we
+# cannot attach to it here). The current worktree is detached when this is
+# consulted, so any match is necessarily another worktree.
+recovery_target_checked_out_elsewhere() {
+  git -C "$PROJ" worktree list --porcelain 2>/dev/null \
+    | sed -n 's#^branch refs/heads/##p' \
+    | grep -Fxq -- "$(recovery_target)"
+}
+
+local_recovery_target_safe() {
+  local target
+  target=$(recovery_target)
+  ! git -C "$PROJ" rev-parse --verify --quiet "$target^{commit}" >/dev/null \
+    || git -C "$PROJ" merge-base --is-ancestor "$target" "$BASE" 2>/dev/null
 }
 
 # Human-readable name for the unsafe state the clone is in, used in the STUCK
@@ -297,10 +308,10 @@ stuck_state() {
     s="detached HEAD"
   elif ! git -C "$PROJ" merge-base --is-ancestor HEAD "$BASE" 2>/dev/null; then
     s="detached HEAD with unique commits"
-  elif default_checked_out_elsewhere; then
-    s="detached HEAD ($DEFAULT checked out in another worktree)"
-  elif ! local_default_safe_for_recovery; then
-    s="detached HEAD (local $DEFAULT diverged from $BASE)"
+  elif recovery_target_checked_out_elsewhere; then
+    s="detached HEAD ($(recovery_target) checked out in another worktree)"
+  elif ! local_recovery_target_safe; then
+    s="detached HEAD (local $(recovery_target) diverged from $BASE)"
   else
     s="detached HEAD"
   fi
@@ -333,21 +344,23 @@ report_off_default_unique() {
   echo "$label: STUCK: on branch $cur, holds unique commits - needs attention"
 }
 
-# Re-attach a clean checkout with no unique commits to the default branch and
+# Re-attach a clean checkout with no unique commits to the recovery target and
 # fast-forward it to the development base. The caller has already verified the
-# recovery preconditions (clean, HEAD an ancestor of $BASE, default free here,
-# local default safe). Reports "recovered:" and returns 0 on every path.
-recover_clean_to_default() {
-  if ! git -C "$PROJ" checkout --quiet "$DEFAULT" 2>/dev/null; then
+# recovery preconditions (clean, HEAD an ancestor of $BASE, target free here,
+# local target safe). Reports "recovered:" and returns 0 on every path.
+recover_clean_to_target() {
+  local target
+  target=$(recovery_target)
+  if ! git -C "$PROJ" checkout --quiet "$target" 2>/dev/null; then
     report_stuck "$(stuck_state)"
     return 0
   fi
-  cur=$DEFAULT
+  cur=$target
   UPSTREAM=$BASE
   STUCK_BASE=$BASE
   local post_local post_remote post_before post_after post_merge
-  post_local=$(git -C "$PROJ" rev-parse "$DEFAULT") || {
-    echo "$label: skipped: cannot read local $DEFAULT"
+  post_local=$(git -C "$PROJ" rev-parse "$target") || {
+    echo "$label: skipped: cannot read local $target"
     return 0
   }
   post_remote=$(git -C "$PROJ" rev-parse "$BASE") || {
@@ -355,15 +368,15 @@ recover_clean_to_default() {
     return 0
   }
   if [ "$post_local" = "$post_remote" ]; then
-    echo "$label: recovered: re-attached $DEFAULT (already current)"
+    echo "$label: recovered: re-attached $target (already current)"
     return 0
   fi
-  if ! git -C "$PROJ" merge-base --is-ancestor "$DEFAULT" "$BASE"; then
-    report_stuck "diverged $DEFAULT"
+  if ! git -C "$PROJ" merge-base --is-ancestor "$target" "$BASE"; then
+    report_stuck "diverged $target"
     return 0
   fi
-  post_before=$(git -C "$PROJ" rev-parse --short "$DEFAULT") || {
-    echo "$label: skipped: cannot read local $DEFAULT"
+  post_before=$(git -C "$PROJ" rev-parse --short "$target") || {
+    echo "$label: skipped: cannot read local $target"
     return 0
   }
   if ! post_merge=$(git -C "$PROJ" merge --ff-only "$BASE" 2>&1); then
@@ -374,19 +387,19 @@ recover_clean_to_default() {
     echo "$label: skipped: $reason"
     return 0
   fi
-  post_after=$(git -C "$PROJ" rev-parse --short "$DEFAULT") || {
-    echo "$label: skipped: fast-forward completed but cannot read local $DEFAULT"
+  post_after=$(git -C "$PROJ" rev-parse --short "$target") || {
+    echo "$label: skipped: fast-forward completed but cannot read local $target"
     return 0
   }
-  echo "$label: recovered: re-attached $DEFAULT, synced $post_before..$post_after"
+  echo "$label: recovered: re-attached $target, synced $post_before..$post_after"
   return 0
 }
 
-clean_recoverable_to_default() {
+clean_recoverable_to_target() {
   [ "$dirty" = no ] \
     && git -C "$PROJ" merge-base --is-ancestor HEAD "$BASE" 2>/dev/null \
-    && ! default_checked_out_elsewhere \
-    && local_default_safe_for_recovery
+    && ! recovery_target_checked_out_elsewhere \
+    && local_recovery_target_safe
 }
 
 sync_project() {
@@ -520,8 +533,8 @@ sync_project() {
         echo "$label: already current"
         return 0
       fi
-      if clean_recoverable_to_default; then
-        recover_clean_to_default
+      if clean_recoverable_to_target; then
+        recover_clean_to_target
         return 0
       fi
       if git -C "$PROJ" merge-base --is-ancestor HEAD "$BASE" 2>/dev/null; then
@@ -561,13 +574,13 @@ sync_project() {
 
   # Detached HEAD. Auto-recover only the one unambiguously safe drift: a clean
   # HEAD that holds no unique commits (it is an ancestor of the development
-  # base) and whose default branch is free to check out here. Re-attaching to
+  # base) and whose recovery target is free to check out here. Re-attaching to
   # an already-published commit strands nothing, and the fast-forward path
-  if ! clean_recoverable_to_default; then
+  if ! clean_recoverable_to_target; then
     report_stuck "$(stuck_state)"
     return 0
   fi
-  recover_clean_to_default
+  recover_clean_to_target
   return 0
 }
 
