@@ -1,0 +1,30 @@
+HOME=/tmp/fm-live-5p.SFv34b
+--- BEFORE: HEAD vs origin/main ---
+News HEAD=55ea88f origin/main=186b3a7 branch=feature
+Tools HEAD=55ea88f origin/main=186b3a7 branch=feature
+Symphony HEAD=55ea88f origin/main=186b3a7 branch=feature
+--- SYNC OUTPUT ---
+News: recovered: re-attached main, synced 408e3db..e2403b6
+Symphony: recovered: re-attached main, synced 408e3db..38d0f89
+Tools: recovered: re-attached main, synced 408e3db..300f718
+--- AFTER ---
+News HEAD=e2403b6 origin/main=e2403b6 branch=main
+Tools HEAD=300f718 origin/main=300f718 branch=main
+Symphony HEAD=38d0f89 origin/main=38d0f89 branch=main
+--- CHECKS ---
+PASS: no false 'already current'
+PASS: News recovered
+PASS: News on main at origin/main
+PASS: Tools recovered
+PASS: Tools on main at origin/main
+PASS: Symphony recovered
+PASS: Symphony on main at origin/main
+--- ADVERSARIAL DIRTY SYNC ---
+AdvDirty: STUCK: on feature with uncommitted changes, current with its own remote but 3 behind origin/main - needs attention
+PASS: dirty stale not already current
+PASS: dirty STUCK with qualifier
+--- ADVERSARIAL UNIQUE SYNC ---
+AdvUnique: STUCK: on branch feature, holds unique commits - needs attention
+PASS: unique-commit not already current
+PASS: unique STUCK named
+HOMEDIR=/tmp/fm-live-5p.SFv34b
